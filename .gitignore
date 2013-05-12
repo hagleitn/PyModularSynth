@@ -29,6 +29,9 @@ nosetests.xml
 # Translations
 *.mo
 
+#emacs
+*~
+
 # Mr Developer
 .mr.developer.cfg
 .project
