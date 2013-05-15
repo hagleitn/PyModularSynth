@@ -25,27 +25,55 @@ class Speaker(Processor):
         Processor.__init__(self)
         self.input = Oscillator(Const(0))
         self._p = pyaudio.PyAudio()
-        # self._rate = 44100
-        self._rate = 22050
+        #self._rate = 44100
+        self._rate = 32000
+        #self._rate = 96000
+        #self._rate = 7950
+        #self._rate = 11025
         self._count = 0
+        self._ring = []
+        self._curr = 0
+        self._last = None
 
     def callback(self, in_data, frame_count, time_info, status):
         self._count = self._count + 1
-        #if self._count % 100 == 0:
-        #    print self._stream.get_cpu_load()
-        data = self.input.process(time_info['output_buffer_dac_time'], frame_count, float(self._rate))
+
+        t = time_info['output_buffer_dac_time']
+        if self._last:
+            self._rate = frame_count / (t - self._last)
+            #print self._rate
+            pass
+        self._last = t
+
+        data = self.input.process(time_info['output_buffer_dac_time'], frame_count, self._rate)
+        #data = [0 for _ in range(frame_count)]
+        #print time_info
+        #print time_info['output_buffer_dac_time'], frame_count * 1/float(self._rate), time_info['output_buffer_dac_time'] + frame_count * 1/float(self._rate)
+
+        if self._count % 10 == 0:
+            print self._stream.get_cpu_load()
+
+#         data = None
+#         if len(self._ring) < 100:
+#             data = self.input.process(time_info['output_buffer_dac_time'], frame_count, self._rate)
+#             self._ring.append(data)
+#             data = [ 0 for _ in range(frame_count) ]
+#         else:
+#             #self._ring[self._curr] = data
+#             self._curr = (self._curr + 1) % 100
+#             data = self._ring[self._curr]
+
         data = struct.pack('%sf' % len(data), *data)
         return (data, pyaudio.paContinue)
 
     def start(self):
         self._stream = self._p.open(format=pyaudio.paFloat32,
                                     channels=1,
-                                    frames_per_buffer=1024,
+                                    frames_per_buffer=2048,
                                     rate=self._rate,
                                     output=True,
                                     stream_callback=self.callback)
 
-        
         self._stream.start_stream()
         
 #        while self._stream.is_active():

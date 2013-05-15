@@ -108,37 +108,100 @@ class Filter(Processor):
     def input(self, proc):
         self._in = proc
         return self
-    
-    def __init__(self, low, hi):
-        Processor.__init__(self)
-        self._low = low
-        self._hi = hi
-        self._w = 300
-        self._in = None
-    
-    def hi_filter(self,f):
-        if f > self._hi + self._w:
-            return 0
-        if f < self._hi - self._w:
-            return 1
-        return 1/2 * (1 - math.sin(math.pi*(f - self._hi)/2*self._w))
 
-    def low_filter(self,f):
-        if f < self._low - self._w:
-            return 0
-        if f > self._low + self._w:
+    @property
+    def low(self):
+        return self._low
+
+    @low.setter
+    def low(self, l):
+        self._low = l
+        return self
+    
+    @property
+    def hi(self):
+        return self._hi
+
+    @hi.setter
+    def hi(self, hi):
+        self._hi = hi
+        return self
+    
+    def __init__(self):
+        Processor.__init__(self)
+        self._low = None
+        self._hi = None
+        self._w = 200
+        self._in = None
+        self._ring = []
+        self._curr = 0
+
+    def _volt_to_freq(self, v):
+        return (C_NEG_1)*(2**(v+10))
+    
+    def hi_filter(self,freq,cutoff):
+        freq = math.fabs(freq)
+        if freq >= cutoff:
             return 1
-        return 1/2 * (1 - math.sin(math.pi*(self._low - f)/2*self._w))
+        return 2**float(freq-cutoff)
+        #return 1/2 * (1 - math.sin(math.pi*(f - self._hi)/2*self._w))
+
+    def low_filter(self,freq,cutoff):
+        freq = math.fabs(freq)
+        if freq <= cutoff:
+            return 1
+        return 2**float(cutoff-freq)
+        #return 1/2 * (1 - math.sin(math.pi*(cutoff - freq)/2*self._w))
+
+    def combine(self, fb, fb2, fb3):
+        if not fb:
+            return fb2
+        fbc = array.array('f')
+        for i in range(len(fb)):
+            fbc.append(fb[i])
+        for i in range(len(fb2)):
+            fbc.append(fb2[i])
+        for i in range(len(fb3)):
+            fbc.append(fb3[i])
+        return fbc
+
+    def take_middle(self, fb, steps):
+        fbr = array.array('f')
+        for i in range(steps):
+            fbr.append(fb[len(fb)-2*steps+i])
+        return fbr
 
     def process(self, start, steps, rate):
         if self.input:
+            low = None
+            hi = None
+            if self.low:
+                low_fb = self.low.process(start, steps, rate)
+                low = self._volt_to_freq(low_fb[int(steps/2)])
+            if self.hi:
+                hi_fb = self.hi.process(start, steps, rate)
+                hi = self._volt_to_freq(hi_fb[int(steps/2)])
             in_fb = self.input.process(start, steps, rate)
+
+            if len(self._ring) < 3:
+                self._ring.append(in_fb)
+                return [ 0 for _ in range(steps) ]
+
+            self._ring[self._curr] = in_fb
+            self._curr = (self._curr + 1) % 3
+
+            in_fb = self.combine(self._ring[self._curr],self._ring[(self._curr+1)%3],self._ring[(self._curr+2)%3])
+
             fs = rfft(in_fb)
             freqs = fftfreq(len(fs), 1/float(rate))
             for i in range(len(fs)):
-                    fs[i] = self.hi_filter(freqs[i])*fs[i]
-                    fs[i] = self.low_filter(freqs[i])*fs[i]
-            return irfft(fs)
+                if hi:
+                    fs[i] = self.hi_filter(freqs[i], hi)*fs[i]
+                if low:
+                    fs[i] = self.low_filter(freqs[i], low)*fs[i]
+            filtered =  irfft(fs)
+            #return filtered
+            return self.take_middle(filtered, steps)
 
 
 class Mixer(Processor):
@@ -190,3 +253,87 @@ class Mixer(Processor):
         return fb
 
 
+class Sequencer(Processor):
+
+    NOTES = ["c","c#","d","d#","e","f","f#","g","g#","a","b"]
+    
+    @property
+    def clock(self):
+        return self._clock
+
+    @clock.setter
+    def clock(self, c):
+        self._clock = c
+
+    @property
+    def signals(self):
+        return self._signals
+
+    @signals.setter
+    def signals(self, s):
+        if type(s) is str:
+            self.active = []
+            self._signals = []
+            note = None
+            octave = None
+            for i in range(len(s)):
+                if s[i] == '#':
+                    note = note + "#"
+                elif s[i] == '_':
+                    self.active.append(False)
+                    self._signals.append(0)
+                elif str(s[i]).isdigit():
+                    octave = int(str(s[i]))
+                else:
+                    self._add_note(note, octave)
+                    note = s[i]
+            self._add_note(note, octave)
+        else:
+            self._signals = s
+
+    def _add_note(self, note, octave):
+        if note:
+            if not octave:
+                octave = 0
+            index = None
+            for j in range(len(Sequencer.NOTES)):
+                if note == Sequencer.NOTES[j]:
+                    index = j
+            self._signals.append(octave+(1/12.0)*index)
+            self.active.append(True)
+
+    @property
+    def active(self):
+        return self._active
+
+    @active.setter
+    def active(self, a):
+        self._active = a
+
+    def __init__(self):
+        Processor.__init__(self)
+        self._clock = None
+        self._signals = []
+        self._active = []
+        self._current = 0
+        self._gate = 0.75
+        self._low = True
+
+    def process(self, start, steps, rate):
+        fb = array.array('f')
+        clock_fb = self._clock.process(start, steps, rate)
+        
+        for i in range(steps):
+            if clock_fb[i] > self._gate:
+                if self._low:
+                    self._current = (self._current + 1) % len(self.signals)
+                    self._low = False
+            else:
+                self._low = True
+            
+            if self._active[self._current]:
+                fb.append(self.signals[self._current])
+            else:
+                fb.append(0)
+
+        return fb
